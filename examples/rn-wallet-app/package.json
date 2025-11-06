@@ -1,0 +1,19 @@
+{
+  "name": "@maany/rn-wallet-app",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "dependencies": {
+    "@maany/react-native-ui": "workspace:^",
+    "react": "18.2.0",
+    "react-native": "0.73.9"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

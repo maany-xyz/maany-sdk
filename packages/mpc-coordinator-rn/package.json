@@ -1,0 +1,10 @@
+{
+  "name": "@maany/mpc-coordinator-rn",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [],
+  "scripts": {
+    "build": "echo 'mpc-coordinator-rn placeholder'"
+  }
+}
