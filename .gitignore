@@ -36,3 +36,5 @@ android/local.properties
 
 # Changesets release artifacts
 .changeset/cache/
+
+.codex

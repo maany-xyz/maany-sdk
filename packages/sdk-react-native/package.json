@@ -1,0 +1,27 @@
+{
+  "name": "@maany/sdk-react-native",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@babel/runtime": "^7.28.4",
+    "@maanyio/mpc-coordinator-rn": "^0.1.4",
+    "@maanyio/mpc-rn-bare": "^0.1.5",
+    "@noble/hashes": "^1.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.48",
+    "@types/react-native": "^0.73.0",
+    "typescript": "^5.5.4"
+  }
+}

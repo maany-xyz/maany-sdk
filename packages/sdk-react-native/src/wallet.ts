@@ -1,0 +1,223 @@
+import * as mpc from '@maanyio/mpc-rn-bare';
+import {
+  DeviceBackupOptions,
+  InMemoryShareStorage,
+  SecureShareStorage,
+  ShareStorage,
+  createCoordinator,
+} from '@maanyio/mpc-coordinator-rn';
+import { connectToCoordinator } from './connection';
+import {
+  CreateKeyOptions,
+  CreateKeyResult,
+  MaanyWallet,
+  WalletOptions,
+  WalletStorageOption,
+} from './types';
+import { bytesFromHex, cloneBytes, hexFromBytes } from './bytes';
+import { randomBytes } from './random';
+import { readEnv } from './env';
+import { withModeSupport } from './coordinator';
+import { uploadCoordinatorBackupFragment } from './backup';
+import { resolveApiBaseUrl, walletExistsRemotely } from './api';
+
+const DEFAULT_AUTH_TOKEN = 'dev-token';
+const DEFAULT_BACKUP_SHARE_COUNT = 3;
+const DEFAULT_BACKUP_THRESHOLD = 2;
+
+interface NormalizedWalletOptions {
+  serverUrl?: string;
+  apiBaseUrl?: string;
+  storage: ShareStorage;
+  sessionIdFactory: () => Uint8Array;
+  token?: string;
+  tokenFactory?: () => Promise<string | undefined> | string | undefined;
+  backup?: DeviceBackupOptions;
+}
+
+export function createMaanyWallet(options: WalletOptions = {}): MaanyWallet {
+  const storage = resolveStorage(options.storage);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, options.serverUrl);
+  const normalized: NormalizedWalletOptions = {
+    serverUrl: options.serverUrl,
+    apiBaseUrl,
+    storage,
+    sessionIdFactory: options.sessionIdFactory ?? (() => randomBytes(16)),
+    token: options.authToken ?? readEnv('EXPO_PUBLIC_MPC_AUTH_TOKEN', 'MAANY_MPC_AUTH_TOKEN') ?? DEFAULT_AUTH_TOKEN,
+    tokenFactory: options.tokenFactory,
+    backup: options.backup,
+  };
+  return new DefaultMaanyWallet(normalized);
+}
+
+class DefaultMaanyWallet implements MaanyWallet {
+  constructor(private readonly options: NormalizedWalletOptions) {}
+
+  async createKey(options: CreateKeyOptions = {}): Promise<CreateKeyResult> {
+    const token = await this.resolveToken(options.token);
+    const session = normalizeSessionId(options.sessionId, this.options.sessionIdFactory);
+    const providedKeyIdHex = options.keyId ? hexFromBytes(options.keyId) : undefined;
+    if (providedKeyIdHex) {
+      const remoteExists = await this.checkRemoteWallet(providedKeyIdHex, token);
+      if (remoteExists === true) {
+        throw new Error('Wallet already exists remotely. Start the recovery flow instead of createKey().');
+      }
+    }
+
+    const connection = await connectToCoordinator({
+      url: this.options.serverUrl,
+      token,
+      intent: 'dkg',
+      sessionId: session.hex,
+      sessionIdHint: options.sessionIdHint ?? session.hex,
+      keyId: providedKeyIdHex,
+    });
+
+    const coordinator = withModeSupport(
+      createCoordinator({
+        transport: connection.transport,
+        storage: this.options.storage,
+      })
+    );
+    const ctx = coordinator.initContext();
+    try {
+      const backupOptions = resolveBackupOptions(session.bytes, options.backup, this.options.backup);
+      console.log('[maany-sdk] wallet: resolved backup options', backupOptions ?? null);
+      const { deviceKeypair, serverKeypair, backup } = await coordinator.runDkg(ctx, {
+        sessionId: session.bytes,
+        keyId: options.keyId,
+        mode: 'device-only',
+        backup: backupOptions,
+      });
+      const deviceBlob = mpc.kpExport(ctx, deviceKeypair);
+      const keyId = providedKeyIdHex ?? hexFromBytes(deviceBlob);
+      if (backup) {
+        console.log('[maany-sdk] wallet: received device backup artifacts', {
+          shareCount: backup.shares.length,
+          ciphertextKind: backup.ciphertext.kind,
+        });
+        try {
+          await uploadCoordinatorBackupFragment({
+            transport: connection.transport,
+            sessionId: connection.sessionId,
+            keyId,
+            backup,
+          });
+        } catch (error) {
+          console.warn('[maany-sdk] wallet: failed to upload coordinator backup fragment', error);
+        }
+      } else {
+        console.warn('[maany-sdk] wallet: coordinator did not produce backup artifacts');
+      }
+      mpc.kpFree(deviceKeypair);
+      if (serverKeypair) {
+        mpc.kpFree(serverKeypair);
+      }
+      return { keyId, sessionId: connection.sessionId };
+    } finally {
+      connection.close();
+      mpc.shutdown(ctx);
+    }
+  }
+
+  private async checkRemoteWallet(keyId: string, token?: string): Promise<boolean | null> {
+    if (!this.options.apiBaseUrl) {
+      return null;
+    }
+    try {
+      return await walletExistsRemotely({ baseUrl: this.options.apiBaseUrl, walletId: keyId, token });
+    } catch (error) {
+      console.warn('[maany-sdk] wallet: wallet lookup failed – proceeding without recovery hint', error);
+      return null;
+    }
+  }
+
+  private async resolveToken(override?: string): Promise<string | undefined> {
+    if (override) {
+      return override;
+    }
+    if (this.options.tokenFactory) {
+      const value = await this.options.tokenFactory();
+      if (value) {
+        return value;
+      }
+    }
+    return this.options.token;
+  }
+}
+
+function resolveStorage(option?: WalletStorageOption): ShareStorage {
+  if (!option || option === 'memory' || (isStorageConfig(option) && option.kind === 'memory')) {
+    return new InMemoryShareStorage();
+  }
+
+  if (option === 'secure' || (isStorageConfig(option) && option.kind === 'secure')) {
+    const promptMessage = typeof option === 'object' && 'promptMessage' in option ? option.promptMessage : undefined;
+    try {
+      return new SecureShareStorage(promptMessage ? { promptMessage } : undefined);
+    } catch (error) {
+      console.warn('[maany-sdk] SecureShareStorage unavailable, falling back to in-memory storage.', error);
+      return new InMemoryShareStorage();
+    }
+  }
+
+  if (isShareStorage(option)) {
+    return option;
+  }
+
+  return new InMemoryShareStorage();
+}
+
+function isStorageConfig(option: WalletStorageOption): option is { kind: 'memory' } | { kind: 'secure'; promptMessage?: string } {
+  return typeof option === 'object' && option !== null && 'kind' in option;
+}
+
+function isShareStorage(value: WalletStorageOption): value is ShareStorage {
+  return typeof value === 'object' && value !== null && 'save' in value && typeof (value as ShareStorage).save === 'function';
+}
+
+function normalizeSessionId(
+  input: string | Uint8Array | undefined,
+  factory: () => Uint8Array
+): { hex: string; bytes: Uint8Array } {
+  if (input instanceof Uint8Array) {
+    const cloned = new Uint8Array(input);
+    return { hex: hexFromBytes(cloned), bytes: cloned };
+  }
+  if (typeof input === 'string' && input.length > 0) {
+    const bytes = bytesFromHex(input);
+    return { hex: hexFromBytes(bytes), bytes };
+  }
+  const bytes = factory();
+  return { hex: hexFromBytes(bytes), bytes };
+}
+
+function resolveBackupOptions(
+  sessionId: Uint8Array,
+  override?: DeviceBackupOptions,
+  fallback?: DeviceBackupOptions
+): DeviceBackupOptions | undefined {
+  const enabled = override?.enabled ?? fallback?.enabled;
+  if (enabled === false) {
+    return { enabled };
+  }
+
+  const shareCount = Math.max(
+    1,
+    override?.shareCount ?? fallback?.shareCount ?? DEFAULT_BACKUP_SHARE_COUNT
+  );
+  const rawThreshold = override?.threshold ?? fallback?.threshold ?? DEFAULT_BACKUP_THRESHOLD;
+  const threshold = Math.min(shareCount, Math.max(1, rawThreshold));
+  const labelSource = override?.label ?? fallback?.label ?? sessionId;
+  const resolved: DeviceBackupOptions = {
+    shareCount,
+    threshold,
+  };
+  if (labelSource) {
+    resolved.label = cloneBytes(labelSource);
+  }
+  if (typeof enabled === 'boolean') {
+    resolved.enabled = enabled;
+  }
+  return resolved;
+}

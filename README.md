@@ -5,6 +5,7 @@ Monorepo for the Maany MPC SDK, including React Native coordinators and UI packa
 ## Packages
 
 - `@maany/mpc-coordinator-rn` – headless coordinator utilities for React Native
+- `@maany/sdk-react-native` – React Native wallet abstraction built on the coordinator
 - `@maany/react-native-ui` – lightweight provider, hooks, and demo components
 - Platform placeholders for web, iOS, and Android coordinators
 
