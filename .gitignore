@@ -36,5 +36,6 @@ android/local.properties
 
 # Changesets release artifacts
 .changeset/cache/
+packages/coordinator-node
 
 .codex

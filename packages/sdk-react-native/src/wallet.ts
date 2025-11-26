@@ -19,6 +19,8 @@ import { randomBytes } from './random';
 import { readEnv } from './env';
 import { withModeSupport } from './coordinator';
 import { uploadCoordinatorBackupFragment } from './backup';
+import { persistDeviceBackupLocally } from './backup-storage';
+import { uploadThirdPartyBackupFragment } from './backup-upload';
 import { resolveApiBaseUrl, walletExistsRemotely } from './api';
 
 const DEFAULT_AUTH_TOKEN = 'dev-token';
@@ -33,11 +35,19 @@ interface NormalizedWalletOptions {
   token?: string;
   tokenFactory?: () => Promise<string | undefined> | string | undefined;
   backup?: DeviceBackupOptions;
+  backupUpload?: BackupUploadConfig | null;
+}
+
+interface BackupUploadConfig {
+  url: string;
+  token?: string;
+  shareIndex?: number;
 }
 
 export function createMaanyWallet(options: WalletOptions = {}): MaanyWallet {
   const storage = resolveStorage(options.storage);
   const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, options.serverUrl);
+  const backupUpload = resolveBackupUpload(options);
   const normalized: NormalizedWalletOptions = {
     serverUrl: options.serverUrl,
     apiBaseUrl,
@@ -46,6 +56,7 @@ export function createMaanyWallet(options: WalletOptions = {}): MaanyWallet {
     token: options.authToken ?? readEnv('EXPO_PUBLIC_MPC_AUTH_TOKEN', 'MAANY_MPC_AUTH_TOKEN') ?? DEFAULT_AUTH_TOKEN,
     tokenFactory: options.tokenFactory,
     backup: options.backup,
+    backupUpload,
   };
   return new DefaultMaanyWallet(normalized);
 }
@@ -106,6 +117,20 @@ class DefaultMaanyWallet implements MaanyWallet {
         } catch (error) {
           console.warn('[maany-sdk] wallet: failed to upload coordinator backup fragment', error);
         }
+        await persistDeviceBackupLocally({ storage: this.options.storage, keyId, backup });
+        if (this.options.backupUpload?.url) {
+          try {
+            await uploadThirdPartyBackupFragment({
+              baseUrl: this.options.backupUpload.url,
+              token: this.options.backupUpload.token,
+              shareIndex: this.options.backupUpload.shareIndex,
+              walletId: keyId,
+              backup,
+            });
+          } catch (error) {
+            console.warn('[maany-sdk] wallet: failed to upload third-party backup fragment', error);
+          }
+        }
       } else {
         console.warn('[maany-sdk] wallet: coordinator did not produce backup artifacts');
       }
@@ -113,7 +138,7 @@ class DefaultMaanyWallet implements MaanyWallet {
       if (serverKeypair) {
         mpc.kpFree(serverKeypair);
       }
-      return { keyId, sessionId: connection.sessionId };
+      return { keyId, sessionId: connection.sessionId, recovery: backup ?? undefined };
     } finally {
       connection.close();
       mpc.shutdown(ctx);
@@ -144,6 +169,18 @@ class DefaultMaanyWallet implements MaanyWallet {
     }
     return this.options.token;
   }
+}
+
+function resolveBackupUpload(options: WalletOptions): BackupUploadConfig | null {
+  const url = options.backupUploadUrl ?? readEnv('EXPO_PUBLIC_MPC_BACKUP_URL', 'MAANY_MPC_BACKUP_URL');
+  if (!url) {
+    return null;
+  }
+  return {
+    url,
+    token: options.backupUploadToken ?? readEnv('EXPO_PUBLIC_MPC_BACKUP_TOKEN', 'MAANY_MPC_BACKUP_TOKEN'),
+    shareIndex: options.backupUploadShareIndex,
+  };
 }
 
 function resolveStorage(option?: WalletStorageOption): ShareStorage {

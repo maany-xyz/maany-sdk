@@ -8,22 +8,14 @@ import {
   View,
 } from 'react-native';
 import {
-  connectToCoordinator,
-  createReactNativeWalletAdapter,
+  createMaanyWallet,
   resolveApiBaseUrl,
   walletExistsRemotely,
 } from '@maany/sdk-react-native';
-import type {
-  CoordinatorConnection,
-  ReactNativeWalletAdapter,
-  SignResult,
-  WalletStatus,
-} from '@maany/sdk-react-native';
+import type { SignResult, WalletStatus } from '@maany/sdk-react-native';
 import {
   InMemoryShareStorage,
-  createCoordinator,
 } from '@maanyio/mpc-coordinator-rn';
-import type { ShareStorage } from '@maanyio/mpc-coordinator-rn';
 import ParallaxScrollView from '@/components/parallax-scroll-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -83,31 +75,12 @@ export default function WalletScreen() {
     'unknown'
   );
 
-  const storageRef = useRef<ShareStorage>(new InMemoryShareStorage());
-  const adapterRef = useRef<ReactNativeWalletAdapter | null>(null);
-  const connectionRef = useRef<CoordinatorConnection | null>(null);
-  const listenersRef = useRef<Array<() => void>>([]);
-
-  const clearListeners = useCallback(() => {
-    listenersRef.current.forEach((unsubscribe) => {
-      try {
-        unsubscribe();
-      } catch (listenerError) {
-        console.warn('Failed to remove wallet listener', listenerError);
-      }
-    });
-    listenersRef.current = [];
-  }, []);
+  const storageRef = useRef(new InMemoryShareStorage());
+  const walletRef = useRef<ReturnType<typeof createMaanyWallet> | null>(null);
 
   const cleanupConnection = useCallback(() => {
-    clearListeners();
-    if (connectionRef.current) {
-      connectionRef.current.close();
-      connectionRef.current = null;
-    }
-    adapterRef.current = null;
-  }, [clearListeners]);
-
+    walletRef.current = null;
+  }, []);
   const refreshKeyId = useCallback(async () => {
     try {
       const record = await storageRef.current.load(METADATA_KEY);
@@ -154,40 +127,23 @@ export default function WalletScreen() {
           setRemoteWalletStatus('error');
         }
       }
-      const connection = await connectToCoordinator({
-        url: serverUrl.trim(),
-        token: token.trim() || undefined,
-        intent: 'dkg',
-        keyId: keyIdHex,
-      });
-      connectionRef.current = connection;
-      const coordinator = createCoordinator({
-        transport: connection.transport,
+      const wallet = createMaanyWallet({
+        serverUrl: serverUrl.trim(),
         storage: storageRef.current,
-      });
-      const adapter = createReactNativeWalletAdapter({ coordinator, storage: storageRef.current });
-      adapterRef.current = adapter;
-      listenersRef.current.push(adapter.onStatus((next) => setStatus(next)));
-      listenersRef.current.push(adapter.onAddress((next) => setAddress(next)));
-      listenersRef.current.push(
-        adapter.onError((walletError) =>
-          setError(walletError instanceof Error ? walletError.message : String(walletError))
-        )
-      );
-
-      await adapter.init();
-      const sessionBytes = hexToBytes(connection.sessionId);
-      const keyIdBytes = hexToBytes(keyIdHex);
-      await adapter.connect({
-        sessionId: sessionBytes,
-        keyId: keyIdBytes,
         backup: {
           shareCount: 3,
           threshold: 2,
         },
+        backupUploadUrl: 'http://localhost:8090',
+        backupUploadToken: token.trim() || undefined,
       });
-      setSessionId(connection.sessionId);
-      await refreshKeyId();
+      walletRef.current = wallet;
+      const result = await wallet.createKey({
+        keyId: hexToBytes(keyIdHex),
+        token: token.trim() || undefined,
+      });
+      setSessionId(result.sessionId);
+      setKeyId(result.keyId);
     } catch (connectionError) {
       cleanupConnection();
       setStatus('error');
@@ -219,23 +175,8 @@ export default function WalletScreen() {
   }, [cleanupConnection]);
 
   const handleSign = useCallback(async () => {
-    if (!adapterRef.current) {
-      setError('Connect the wallet before signing.');
-      return;
-    }
-    setSigning(true);
-    setError(null);
-    setSignature(null);
-    try {
-      const bytes = stringToBytes(message);
-      const result = await adapterRef.current.sign({ bytes });
-      setSignature({ ...result });
-    } catch (signError) {
-      setError(signError instanceof Error ? signError.message : String(signError));
-    } finally {
-      setSigning(false);
-    }
-  }, [message]);
+    setError('Signing not implemented in createMaanyWallet demo.');
+  }, []);
 
   const statusColor = status === 'ready' ? Colors[colorScheme].tint : Colors[colorScheme].text;
   const remoteWalletLabel = (() => {

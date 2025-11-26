@@ -24,3 +24,21 @@ export const bytesFromHex = (hex: string): Uint8Array => {
   }
   return bytes;
 };
+
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+
+export function bytesToBase64(bytes: Uint8Array): string {
+  let output = '';
+  const len = bytes.length;
+  for (let i = 0; i < len; i += 3) {
+    const a = bytes[i];
+    const b = i + 1 < len ? bytes[i + 1] : 0;
+    const c = i + 2 < len ? bytes[i + 2] : 0;
+    const triplet = (a << 16) | (b << 8) | c;
+    output += BASE64_ALPHABET[(triplet >> 18) & 0x3f];
+    output += BASE64_ALPHABET[(triplet >> 12) & 0x3f];
+    output += i + 1 < len ? BASE64_ALPHABET[(triplet >> 6) & 0x3f] : '=';
+    output += i + 2 < len ? BASE64_ALPHABET[triplet & 0x3f] : '=';
+  }
+  return output;
+}

@@ -3,6 +3,7 @@ import type {
   Coordinator,
   CoordinatorOptions,
   DeviceBackupOptions,
+  DeviceBackupArtifacts,
   ShareStorage,
   Transport,
 } from '@maanyio/mpc-coordinator-rn';
@@ -109,6 +110,9 @@ export interface WalletOptions {
   storage?: WalletStorageOption;
   sessionIdFactory?: () => Uint8Array;
   backup?: DeviceBackupOptions;
+  backupUploadUrl?: string;
+  backupUploadToken?: string;
+  backupUploadShareIndex?: number;
 }
 
 export interface CreateKeyOptions {
@@ -122,6 +126,7 @@ export interface CreateKeyOptions {
 export interface CreateKeyResult {
   keyId: string;
   sessionId: string;
+  recovery?: DeviceBackupArtifacts;
 }
 
 export interface MaanyWallet {

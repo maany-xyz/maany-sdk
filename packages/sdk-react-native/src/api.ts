@@ -14,18 +14,25 @@ export async function walletExistsRemotely(options: WalletExistenceCheckOptions)
   if (options.token) {
     headers.Authorization = `Bearer ${options.token}`;
   }
+  console.log('[maany-sdk] wallet lookup: GET', url);
   const response = await fetch(url, {
     method: 'GET',
     headers,
   });
-  if (response.status === 200) {
-    return true;
+  console.log('[maany-sdk] wallet lookup: status', response.status);
+  const bodyText = await safeReadBody(response);
+  if (response.status !== 200) {
+    throw new Error(`wallet lookup failed with status ${response.status}${bodyText ? `: ${bodyText}` : ''}`);
   }
-  if (response.status === 404) {
-    return false;
+  try {
+    const parsed = JSON.parse(bodyText);
+    if (parsed && typeof parsed.exists === 'boolean') {
+      return parsed.exists;
+    }
+  } catch (error) {
+    console.warn('[maany-sdk] wallet lookup: failed to parse response body', error);
   }
-  const body = await safeReadBody(response);
-  throw new Error(`wallet lookup failed with status ${response.status}${body ? `: ${body}` : ''}`);
+  return false;
 }
 
 function buildWalletUrl(baseUrl: string, walletId: string): string {
