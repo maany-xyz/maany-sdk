@@ -7,6 +7,7 @@ import type {
   ShareStorage,
   Transport,
 } from '@maanyio/mpc-coordinator-rn';
+import type { Coin } from './cosmos';
 
 export type WalletStatus = 'idle' | 'connecting' | 'ready' | 'locked' | 'error';
 
@@ -53,6 +54,13 @@ export interface SignResult {
 export interface SignCosmosDocResult extends SignResult {
   digest: Uint8Array;
   bodyBytes: Uint8Array;
+}
+
+export type BroadcastMode = 'BROADCAST_MODE_SYNC' | 'BROADCAST_MODE_ASYNC' | 'BROADCAST_MODE_BLOCK';
+
+export interface GasPriceConfig {
+  amount: string;
+  denom: string;
 }
 
 export interface WalletEvents {
@@ -114,6 +122,11 @@ export interface WalletOptions {
   backupUploadToken?: string;
   backupUploadShareIndex?: number;
   metadataKey?: string;
+  chainId?: string;
+  addressPrefix?: string;
+  defaultGasPrice?: GasPriceConfig;
+  gasAdjustment?: number;
+  broadcastMode?: BroadcastMode;
 }
 
 export interface CreateKeyOptions {
@@ -135,6 +148,7 @@ export interface MaanyWallet {
   recoverKey(options: RecoverKeyOptions): Promise<RecoverKeyResult>;
   signBytes(options: WalletSignOptions): Promise<SignResult>;
   signCosmos(options: WalletSignCosmosOptions): Promise<SignCosmosDocResult>;
+  signAndBroadcastMsgSend(options: WalletMsgSendOptions): Promise<WalletMsgSendResult>;
 }
 
 export interface WalletSignOptions {
@@ -153,6 +167,34 @@ export interface WalletSignCosmosOptions {
   format?: mpc.SignatureFormat;
   token?: string;
   prehash?: boolean;
+}
+
+export interface WalletMsgSendOptions {
+  keyId?: Uint8Array;
+  fromAddress?: string;
+  toAddress: string;
+  amount: Coin;
+  memo?: string;
+  chainId?: string;
+  gasPrice?: GasPriceConfig;
+  gasAdjustment?: number;
+  broadcastMode?: BroadcastMode;
+  prehash?: boolean;
+  extraAad?: Uint8Array;
+  format?: mpc.SignatureFormat;
+  token?: string;
+}
+
+export interface WalletMsgSendResult extends SignCosmosDocResult {
+  txhash: string;
+  height?: string;
+  rawLog?: string;
+  code?: number;
+  txRawBytes: Uint8Array;
+  gasUsed: number;
+  gasWanted: number;
+  gasLimit: string;
+  fee: Coin;
 }
 
 export interface RecoverKeyOptions {

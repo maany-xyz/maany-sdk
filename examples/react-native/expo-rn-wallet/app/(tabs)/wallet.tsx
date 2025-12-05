@@ -12,7 +12,7 @@ import {
   resolveApiBaseUrl,
   walletExistsRemotely,
 } from '@maany/sdk-react-native';
-import type { SignResult, WalletStatus } from '@maany/sdk-react-native';
+import type { WalletMsgSendResult, WalletStatus } from '@maany/sdk-react-native';
 import { pubkeyToCosmosAddress, InMemoryShareStorage } from '@maanyio/mpc-coordinator-rn';
 import * as mpc from '@maanyio/mpc-rn-bare';
 import ParallaxScrollView from '@/components/parallax-scroll-view';
@@ -22,7 +22,10 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
-const ADDRESS_PREFIX="maany"
+const ADDRESS_PREFIX = 'maany';
+const DEFAULT_CHAIN_ID = 'maany-local-1';
+const DEFAULT_GAS_PRICE = { amount: '62000', denom: 'umaany' } as const;
+const DEFAULT_RECIPIENT = 'maany1yvkk37ay7rtv8w3cy9w9elku7ty3yve66x24yx';
 const DEFAULT_SERVER_URL = Platform.OS === 'android' ? 'ws://10.0.2.2:8080' : 'ws://localhost:8080';
 const METADATA_KEY = 'maany:wallet:key-id';
 const mpcExtended = mpc as typeof mpc & {
@@ -30,7 +33,6 @@ const mpcExtended = mpc as typeof mpc & {
   kpPubkey?: (ctx: mpc.Ctx, kp: mpc.Keypair) => { curve: number; compressed: Uint8Array };
 };
 
-const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 function hexToBytes(hex: string): Uint8Array {
@@ -58,10 +60,6 @@ function utf8FromBytes(bytes: Uint8Array): string {
   return decoder.decode(bytes);
 }
 
-function stringToBytes(value: string): Uint8Array {
-  return encoder.encode(value);
-}
-
 function getPubkeyBytes(ctx: mpc.Ctx, keypair: mpc.Keypair): Uint8Array | null {
   if (typeof mpcExtended.kpPubkey === 'function') {
     const result = mpcExtended.kpPubkey(ctx, keypair);
@@ -70,17 +68,6 @@ function getPubkeyBytes(ctx: mpc.Ctx, keypair: mpc.Keypair): Uint8Array | null {
     }
   }
   return null;
-}
-
-function buildDummySignDoc(amount: string, denom: string, memo: string): any {
-  const sanitizedAmount = Number.parseInt(amount, 10) || 0;
-  return {
-    chainId: 'localnet-1',
-    accountNumber: '1',
-    sequence: '0',
-    bodyBytes: stringToBytes(memo),
-    authInfoBytes: stringToBytes(JSON.stringify({ amount: sanitizedAmount, denom })),
-  };
 }
 
 export default function WalletScreen() {
@@ -94,8 +81,8 @@ export default function WalletScreen() {
   const [message, setMessage] = useState('Hello from Expo 👋');
   const [signAmount, setSignAmount] = useState('1');
   const [signDenom, setSignDenom] = useState('uatom');
-  const [signingResult, setSigningResult] = useState<string | null>(null);
-  const [signature, setSignature] = useState<SignResult | null>(null);
+  const [recipient, setRecipient] = useState(DEFAULT_RECIPIENT);
+  const [txResult, setTxResult] = useState<WalletMsgSendResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [signing, setSigning] = useState(false);
@@ -134,6 +121,7 @@ export default function WalletScreen() {
   const createWalletInstance = useCallback(() => {
     return createMaanyWallet({
       serverUrl: serverUrl.trim(),
+      apiBaseUrl:"http://localhost:1317",
       storage: storageRef.current,
       backup: {
         shareCount: 3,
@@ -141,6 +129,9 @@ export default function WalletScreen() {
       },
       backupUploadUrl: 'http://localhost:8090',
       backupUploadToken: token.trim() || undefined,
+      chainId: DEFAULT_CHAIN_ID,
+      addressPrefix: ADDRESS_PREFIX,
+      defaultGasPrice: DEFAULT_GAS_PRICE,
     });
   }, [serverUrl, token]);
 
@@ -151,7 +142,6 @@ export default function WalletScreen() {
     }
     setConnecting(true);
     setError(null);
-    setSignature(null);
     try {
       cleanupConnection();
       const keyIdHex = '6d61616e792d77616c6c65742d6b65792d303030303030303030303030303031';
@@ -202,8 +192,7 @@ export default function WalletScreen() {
       setAddress(null);
       setSessionId(null);
       setKeyId(null);
-      setSignature(null);
-      setSigningResult(null);
+      setTxResult(null);
       setStatus('idle');
       setRemoteWalletStatus('unknown');
     } catch (disconnectError) {
@@ -239,22 +228,23 @@ export default function WalletScreen() {
   const handleSign = useCallback(async () => {
     setSigning(true);
     setError(null);
-    setSigningResult(null);
+    setTxResult(null);
     try {
       const wallet = walletRef.current ?? createWalletInstance();
       walletRef.current = wallet;
-      const doc = buildDummySignDoc(signAmount, signDenom, message);
-      const result = await wallet.signCosmos({
-        doc,
+      const result = await wallet.signAndBroadcastMsgSend({
+        toAddress: recipient.trim(),
+        amount: { denom: signDenom.trim(), amount: signAmount.trim() },
+        memo: message,
         token: token.trim() || undefined,
       });
-      setSigningResult(bytesToHex(result.signature));
+      setTxResult(result);
     } catch (signError) {
       setError(signError instanceof Error ? signError.message : String(signError));
     } finally {
       setSigning(false);
     }
-  }, [createWalletInstance, signAmount, signDenom, message, token]);
+  }, [createWalletInstance, recipient, signAmount, signDenom, message, token]);
 
   const handleShowKeyData = useCallback(async () => {
     setPubkeyError(null);
@@ -423,6 +413,13 @@ export default function WalletScreen() {
           <ThemedText type="subtitle">Sign a Cosmos transfer</ThemedText>
           <TextInput
             style={[styles.input, { borderColor: Colors[colorScheme].tint, color: Colors[colorScheme].text }]}
+            autoCapitalize="none"
+            value={recipient}
+            onChangeText={setRecipient}
+            placeholder="Recipient address"
+          />
+          <TextInput
+            style={[styles.input, { borderColor: Colors[colorScheme].tint, color: Colors[colorScheme].text }]}
             keyboardType="numeric"
             value={signAmount}
             onChangeText={setSignAmount}
@@ -442,11 +439,14 @@ export default function WalletScreen() {
             placeholder="Memo"
           />
           <ActionButton label={signing ? 'Signing…' : 'Sign transfer'} onPress={handleSign} disabled={signing} />
-          {signingResult && (
+          {txResult && (
             <View style={styles.signatureBox}>
-              <ThemedText type="defaultSemiBold">Signature (DER)</ThemedText>
+              <ThemedText type="defaultSemiBold">Broadcast Result</ThemedText>
               <ThemedText selectable style={styles.mono}>
-                {signingResult}
+                Tx Hash: {txResult.txhash}
+              </ThemedText>
+              <ThemedText selectable style={styles.mono}>
+                Fee: {txResult.fee.amount} {txResult.fee.denom} (gas limit {txResult.gasLimit})
               </ThemedText>
             </View>
           )}

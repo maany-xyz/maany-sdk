@@ -9,15 +9,19 @@ import {
 } from '@maanyio/mpc-coordinator-rn';
 import { connectToCoordinator } from './connection';
 import {
+  BroadcastMode,
   CreateKeyOptions,
   CreateKeyResult,
+  GasPriceConfig,
   MaanyWallet,
+  WalletMsgSendOptions,
+  WalletMsgSendResult,
   WalletOptions,
+  WalletSignCosmosOptions,
+  WalletSignOptions,
   WalletStorageOption,
   RecoverKeyOptions,
   RecoverKeyResult,
-  WalletSignOptions,
-  WalletSignCosmosOptions,
   SignCosmosDocResult,
   SignResult,
 } from './types';
@@ -31,10 +35,28 @@ import { uploadThirdPartyBackupFragment } from './backup-upload';
 import { fetchCoordinatorRecoveryArtifact, fetchThirdPartyRecoveryFragment } from './recovery';
 import { resolveApiBaseUrl, walletExistsRemotely } from './api';
 import { buildSignDoc, hashSignDoc } from '@maany/cosmos-sign-doc';
+import {
+  JsonTransport,
+  buildTxBody,
+  buildAuthInfo,
+  buildTxRaw,
+  buildSecp256k1PubkeyAny,
+  buildMsgSend,
+  fetchBaseAccount,
+  simulateTx,
+  broadcastTx,
+  pubkeyToAddress,
+  type Coin,
+} from './cosmos';
 
 const DEFAULT_AUTH_TOKEN = 'dev-token';
 const DEFAULT_BACKUP_SHARE_COUNT = 3;
 const DEFAULT_BACKUP_THRESHOLD = 2;
+const DEFAULT_ADDRESS_PREFIX = 'maany';
+const DEFAULT_GAS_PRICE: GasPriceConfig = { amount: '0.025', denom: 'uatom' };
+const DEFAULT_GAS_ADJUSTMENT = 1.2;
+const DEFAULT_BROADCAST_MODE: BroadcastMode = 'BROADCAST_MODE_SYNC';
+const DEFAULT_GAS_ESTIMATE = 200_000;
 
 interface NormalizedWalletOptions {
   serverUrl?: string;
@@ -46,6 +68,11 @@ interface NormalizedWalletOptions {
   backup?: DeviceBackupOptions;
   backupUpload?: BackupUploadConfig | null;
   metadataKey: string;
+  chainId?: string;
+  addressPrefix: string;
+  gasPrice: GasPriceConfig;
+  gasAdjustment: number;
+  broadcastMode: BroadcastMode;
 }
 
 interface BackupUploadConfig {
@@ -58,6 +85,7 @@ export function createMaanyWallet(options: WalletOptions = {}): MaanyWallet {
   const storage = resolveStorage(options.storage);
   const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, options.serverUrl);
   const backupUpload = resolveBackupUpload(options);
+  const gasPrice = normalizeGasPriceConfig(options.defaultGasPrice, DEFAULT_GAS_PRICE);
   const normalized: NormalizedWalletOptions = {
     serverUrl: options.serverUrl,
     apiBaseUrl,
@@ -68,6 +96,11 @@ export function createMaanyWallet(options: WalletOptions = {}): MaanyWallet {
     backup: options.backup,
     backupUpload,
     metadataKey: options.metadataKey ?? 'maany:wallet:key-id',
+    chainId: options.chainId,
+    addressPrefix: options.addressPrefix ?? DEFAULT_ADDRESS_PREFIX,
+    gasPrice,
+    gasAdjustment: options.gasAdjustment ?? DEFAULT_GAS_ADJUSTMENT,
+    broadcastMode: options.broadcastMode ?? DEFAULT_BROADCAST_MODE,
   };
   return new DefaultMaanyWallet(normalized);
 }
@@ -270,6 +303,127 @@ class DefaultMaanyWallet implements MaanyWallet {
     };
   }
 
+  async signAndBroadcastMsgSend(options: WalletMsgSendOptions): Promise<WalletMsgSendResult> {
+    if (!this.options.apiBaseUrl) {
+      throw new Error('Coordinator API URL is not configured for Cosmos transactions');
+    }
+    const keyIdHex = options.keyId ? hexFromBytes(cloneBytes(options.keyId)) : await this.ensureKeyId();
+    if (!keyIdHex) {
+      throw new Error('signAndBroadcastMsgSend requires an existing wallet. Run createKey() first.');
+    }
+    if (!options.toAddress) {
+      throw new Error('signAndBroadcastMsgSend requires a recipient address');
+    }
+    const toAddress = options.toAddress.trim();
+    if (!toAddress) {
+      throw new Error('Recipient address must be non-empty');
+    }
+    const chainId = options.chainId ?? this.options.chainId;
+    if (!chainId) {
+      throw new Error('chainId is required. Configure WalletOptions.chainId or pass it per request.');
+    }
+    if (!options.amount || !options.amount.denom || !options.amount.amount) {
+      throw new Error('signAndBroadcastMsgSend requires an amount with denom and value');
+    }
+    const amountValue = options.amount.amount.trim();
+    const amountDenom = options.amount.denom.trim();
+    if (!amountValue || !amountDenom) {
+      throw new Error('Amount denom and value must be non-empty');
+    }
+    const token = await this.resolveToken(options.token);
+    console.log('[maany-sdk] wallet: starting signAndBroadcastMsgSend', {
+      toAddress,
+      amount: amountValue,
+      denom: amountDenom,
+      chainId,
+      keyId: keyIdHex,
+    });
+    const transport = this.createTransport(token);
+    const keyMaterial = await this.deriveKeyMaterial(keyIdHex);
+    const providedFrom = options.fromAddress?.trim();
+    const normalizedFrom = providedFrom ?? keyMaterial.address;
+    if (providedFrom && providedFrom !== keyMaterial.address) {
+      throw new Error('Provided fromAddress does not match the wallet key');
+    }
+    console.log('[maany-sdk] wallet: resolved signer address', normalizedFrom);
+    const account = await fetchBaseAccount(transport, normalizedFrom);
+    console.log('[maany-sdk] wallet: fetched base account', account);
+    const message = buildMsgSend({
+      fromAddress: normalizedFrom,
+      toAddress,
+      amount: [{ denom: amountDenom, amount: amountValue }],
+    });
+    const bodyBytes = buildTxBody({ messages: [message], memo: options.memo });
+    const gasPrice = normalizeGasPriceConfig(options.gasPrice, this.options.gasPrice);
+    const gasAdjustment = options.gasAdjustment ?? this.options.gasAdjustment;
+    const signerPublicKey = buildSecp256k1PubkeyAny(keyMaterial.compressed);
+    const simulateAuthInfo = buildAuthInfo({
+      sequence: account.sequence,
+      publicKey: signerPublicKey,
+      gasLimit: '0',
+      feeAmount: [{ denom: gasPrice.denom, amount: '0' }],
+    });
+    const simulateTxBytes = buildTxRaw({
+      bodyBytes,
+      authInfoBytes: simulateAuthInfo,
+      signatures: [new Uint8Array(64)],
+    });
+    console.log('[maany-sdk] wallet: simulating transaction');
+    const gasEstimate = await simulateTx(transport, simulateTxBytes);
+    console.log('[maany-sdk] wallet: gas estimate', gasEstimate);
+    const gasLimit = calculateGasLimit(
+      gasEstimate.recommended || gasEstimate.gasWanted || gasEstimate.gasUsed,
+      gasAdjustment,
+    );
+    const gasLimitString = gasLimit.toString();
+    const feeAmountValue = multiplyGasPrice(gasPrice.amount, gasLimit);
+    const feeCoin: Coin = { denom: gasPrice.denom, amount: feeAmountValue };
+    const authInfoBytes = buildAuthInfo({
+      sequence: account.sequence,
+      publicKey: signerPublicKey,
+      gasLimit: gasLimitString,
+      feeAmount: [feeCoin],
+    });
+    const doc = {
+      bodyBytes,
+      authInfoBytes,
+      chainId,
+      accountNumber: account.accountNumber,
+      sequence: account.sequence,
+    };
+    console.log('[maany-sdk] wallet: signing sign doc');
+    const signatureResult = await this.signCosmos({
+      doc,
+      keyId: options.keyId,
+      extraAad: options.extraAad,
+      format: options.format,
+      token: options.token,
+      prehash: options.prehash,
+    });
+    console.log('[maany-sdk] wallet: signature produced');
+    const txRawBytes = buildTxRaw({
+      bodyBytes,
+      authInfoBytes,
+      signatures: [signatureResult.signature],
+    });
+    const broadcastMode = options.broadcastMode ?? this.options.broadcastMode;
+    console.log('[maany-sdk] wallet: broadcasting transaction', { mode: broadcastMode });
+    const broadcastResult = await broadcastTx(transport, txRawBytes, broadcastMode);
+    console.log('[maany-sdk] wallet: broadcast result', broadcastResult);
+    return {
+      ...signatureResult,
+      txhash: broadcastResult.txhash,
+      height: broadcastResult.height,
+      rawLog: broadcastResult.rawLog,
+      code: broadcastResult.code,
+      txRawBytes,
+      gasUsed: gasEstimate.gasUsed,
+      gasWanted: gasEstimate.gasWanted,
+      gasLimit: gasLimitString,
+      fee: feeCoin,
+    };
+  }
+
   private async checkRemoteWallet(keyId: string, token?: string): Promise<boolean | null> {
     if (!this.options.apiBaseUrl) {
       return null;
@@ -279,6 +433,39 @@ class DefaultMaanyWallet implements MaanyWallet {
     } catch (error) {
       console.warn('[maany-sdk] wallet: wallet lookup failed – proceeding without recovery hint', error);
       return null;
+    }
+  }
+
+  private createTransport(token?: string): JsonTransport {
+    if (!this.options.apiBaseUrl) {
+      throw new Error('Coordinator API URL is not configured');
+    }
+    const headers = token
+      ? {
+          'content-type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        }
+      : undefined;
+    return new JsonTransport({ baseUrl: this.options.apiBaseUrl, defaultHeaders: headers });
+  }
+
+  private async deriveKeyMaterial(
+    keyIdHex: string,
+  ): Promise<{ address: string; compressed: Uint8Array }> {
+    const blob = await this.loadDeviceShare(keyIdHex);
+    const ctx = mpc.init();
+    try {
+      const keypair = mpc.kpImport(ctx, blob);
+      const pubkey = mpc.kpPubkey(ctx, keypair);
+      mpc.kpFree(keypair);
+      if (!pubkey?.compressed) {
+        throw new Error('Unable to derive wallet public key');
+      }
+      const compressed = cloneBytes(pubkey.compressed);
+      const address = pubkeyToAddress(compressed, this.options.addressPrefix);
+      return { address, compressed };
+    } finally {
+      mpc.shutdown(ctx);
     }
   }
 
@@ -412,3 +599,48 @@ type BackupRestoreCapableMpc = typeof mpc & {
 };
 
 const mpcWithBackup = mpc as BackupRestoreCapableMpc;
+
+function normalizeGasPriceConfig(
+  input: GasPriceConfig | undefined,
+  fallback: GasPriceConfig,
+): GasPriceConfig {
+  const source = input ?? fallback;
+  const amount = source.amount?.trim();
+  const denom = source.denom?.trim();
+  if (!amount) {
+    throw new Error('Gas price amount must be provided');
+  }
+  if (!denom) {
+    throw new Error('Gas price denom must be provided');
+  }
+  return { amount, denom };
+}
+
+function calculateGasLimit(estimate: number | undefined, gasAdjustment: number): bigint {
+  const safeEstimate = typeof estimate === 'number' && Number.isFinite(estimate) && estimate > 0
+    ? estimate
+    : DEFAULT_GAS_ESTIMATE;
+  const adjusted = Math.max(1, Math.ceil(safeEstimate * gasAdjustment));
+  return BigInt(adjusted);
+}
+
+function multiplyGasPrice(amount: string, gasLimit: bigint): string {
+  const { numerator, denominator } = parseDecimalString(amount);
+  const product = numerator * gasLimit;
+  return ((product + denominator - 1n) / denominator).toString();
+}
+
+function parseDecimalString(value: string): { numerator: bigint; denominator: bigint } {
+  const normalized = value.trim();
+  if (!/^\d+(\.\d+)?$/.test(normalized)) {
+    throw new Error(`Invalid decimal string: ${value}`);
+  }
+  const [whole, fractional = ''] = normalized.split('.');
+  const digits = fractional.replace(/[^0-9]/g, '');
+  const numerator = BigInt(`${whole}${digits}`);
+  const denominator = BigInt(10) ** BigInt(digits.length);
+  return {
+    numerator,
+    denominator: denominator === 0n ? 1n : denominator,
+  };
+}

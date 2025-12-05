@@ -16,6 +16,7 @@
   "dependencies": {
     "@babel/runtime": "^7.28.4",
     "@maany/cosmos-sign-doc": "workspace:*",
+    "@maany/cosmos-tx": "workspace:*",
     "@maanyio/mpc-coordinator-rn": "^0.1.4",
     "@maanyio/mpc-rn-bare": "^0.1.5",
     "@noble/hashes": "^1.8.0"
