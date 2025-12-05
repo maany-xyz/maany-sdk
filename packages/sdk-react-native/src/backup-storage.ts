@@ -1,6 +1,6 @@
-import type { DeviceBackupArtifacts } from '@maanyio/mpc-coordinator-rn';
+import type { DeviceBackupArtifacts, BackupCiphertext } from '@maanyio/mpc-coordinator-rn';
 import type { ShareStorage } from '@maanyio/mpc-coordinator-rn';
-import { bytesFromUtf8, hexFromBytes } from './bytes';
+import { bytesFromUtf8, hexFromBytes, bytesFromHex, utf8FromBytes } from './bytes';
 
 export async function persistDeviceBackupLocally(params: {
   storage: ShareStorage;
@@ -25,10 +25,56 @@ function serializeBackup(backup: DeviceBackupArtifacts) {
       label: hexFromBytes(backup.ciphertext.label),
       blob: hexFromBytes(backup.ciphertext.blob),
     },
-    shares: backup.shares.map((share, index) => ({ index, value: hexFromBytes(share) })),
+    shares: backup.shares.length ? [{ index: 0, value: hexFromBytes(backup.shares[0]) }] : [],
   };
 }
 
 function makeBackupKey(keyId: string): string {
   return `${keyId}:backup:device`;
+}
+
+export async function loadPersistedDeviceBackup(params: {
+  storage: ShareStorage;
+  keyId: string;
+}): Promise<DeviceBackupArtifacts | null> {
+  const record = await params.storage.load(makeBackupKey(params.keyId));
+  if (!record) {
+    return null;
+  }
+  try {
+    const decoded = JSON.parse(utf8FromBytes(record.blob));
+    return deserializeBackup(decoded);
+  } catch (error) {
+    console.warn('[maany-sdk] backup: failed to parse local backup artifact', error);
+    return null;
+  }
+}
+
+function deserializeBackup(value: any): DeviceBackupArtifacts {
+  const ciphertext = deserializeCiphertext(value?.ciphertext);
+  const shares = Array.isArray(value?.shares)
+    ? value.shares
+        .map((entry: any) => (typeof entry?.value === 'string' ? bytesFromHex(entry.value) : null))
+        .filter((entry: Uint8Array | null): entry is Uint8Array => entry !== null)
+    : [];
+  return {
+    ciphertext,
+    shares,
+  };
+}
+
+function deserializeCiphertext(value: any): BackupCiphertext {
+  if (!value) {
+    throw new Error('Missing ciphertext payload');
+  }
+  return {
+    kind: value.kind,
+    curve: value.curve,
+    scheme: value.scheme,
+    keyId: bytesFromHex(String(value.keyId ?? '')),
+    threshold: value.threshold,
+    shareCount: value.shareCount,
+    label: bytesFromHex(String(value.label ?? '')),
+    blob: bytesFromHex(String(value.blob ?? '')),
+  };
 }

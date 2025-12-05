@@ -113,6 +113,7 @@ export interface WalletOptions {
   backupUploadUrl?: string;
   backupUploadToken?: string;
   backupUploadShareIndex?: number;
+  metadataKey?: string;
 }
 
 export interface CreateKeyOptions {
@@ -131,4 +132,15 @@ export interface CreateKeyResult {
 
 export interface MaanyWallet {
   createKey(options?: CreateKeyOptions): Promise<CreateKeyResult>;
+  recoverKey(options: RecoverKeyOptions): Promise<RecoverKeyResult>;
+}
+
+export interface RecoverKeyOptions {
+  keyId: Uint8Array;
+  token?: string;
+}
+
+export interface RecoverKeyResult {
+  keyId: string;
+  restored: boolean;
 }

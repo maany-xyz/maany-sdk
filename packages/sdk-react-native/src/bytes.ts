@@ -27,6 +27,38 @@ export const bytesFromHex = (hex: string): Uint8Array => {
 
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
 
+
+export function bytesFromBase64(value: string): Uint8Array {
+  const sanitized = value.replace(/[^A-Za-z0-9+/=]/g, '');
+  if (sanitized.length % 4 !== 0) {
+    throw new Error('Invalid base64 input length');
+  }
+  const outputLength = (sanitized.length / 4) * 3 - (sanitized.endsWith('==') ? 2 : sanitized.endsWith('=') ? 1 : 0);
+  const bytes = new Uint8Array(outputLength);
+  let buffer = 0;
+  let bits = 0;
+  let index = 0;
+  for (const char of sanitized) {
+    if (char === '=') {
+      break;
+    }
+    const valueIndex = BASE64_ALPHABET.indexOf(char);
+    if (valueIndex === -1) {
+      continue;
+    }
+    buffer = (buffer << 6) | (valueIndex & 0x3f);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      const byte = (buffer >> bits) & 0xff;
+      if (index < bytes.length) {
+        bytes[index++] = byte;
+      }
+    }
+  }
+  return bytes;
+}
+
 export function bytesToBase64(bytes: Uint8Array): string {
   let output = '';
   const len = bytes.length;

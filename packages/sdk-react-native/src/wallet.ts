@@ -1,6 +1,7 @@
 import * as mpc from '@maanyio/mpc-rn-bare';
 import {
   DeviceBackupOptions,
+  BackupCiphertext,
   InMemoryShareStorage,
   SecureShareStorage,
   ShareStorage,
@@ -13,14 +14,17 @@ import {
   MaanyWallet,
   WalletOptions,
   WalletStorageOption,
+  RecoverKeyOptions,
+  RecoverKeyResult,
 } from './types';
-import { bytesFromHex, cloneBytes, hexFromBytes } from './bytes';
+import { bytesFromHex, bytesFromUtf8, cloneBytes, hexFromBytes } from './bytes';
 import { randomBytes } from './random';
 import { readEnv } from './env';
 import { withModeSupport } from './coordinator';
 import { uploadCoordinatorBackupFragment } from './backup';
-import { persistDeviceBackupLocally } from './backup-storage';
+import { persistDeviceBackupLocally, loadPersistedDeviceBackup } from './backup-storage';
 import { uploadThirdPartyBackupFragment } from './backup-upload';
+import { fetchCoordinatorRecoveryArtifact, fetchThirdPartyRecoveryFragment } from './recovery';
 import { resolveApiBaseUrl, walletExistsRemotely } from './api';
 
 const DEFAULT_AUTH_TOKEN = 'dev-token';
@@ -36,6 +40,7 @@ interface NormalizedWalletOptions {
   tokenFactory?: () => Promise<string | undefined> | string | undefined;
   backup?: DeviceBackupOptions;
   backupUpload?: BackupUploadConfig | null;
+  metadataKey: string;
 }
 
 interface BackupUploadConfig {
@@ -57,6 +62,7 @@ export function createMaanyWallet(options: WalletOptions = {}): MaanyWallet {
     tokenFactory: options.tokenFactory,
     backup: options.backup,
     backupUpload,
+    metadataKey: options.metadataKey ?? 'maany:wallet:key-id',
   };
   return new DefaultMaanyWallet(normalized);
 }
@@ -102,6 +108,8 @@ class DefaultMaanyWallet implements MaanyWallet {
       });
       const deviceBlob = mpc.kpExport(ctx, deviceKeypair);
       const keyId = providedKeyIdHex ?? hexFromBytes(deviceBlob);
+      await this.options.storage.save({ keyId, blob: cloneBytes(deviceBlob) });
+      await this.persistKeyIdentifier(keyId);
       if (backup) {
         console.log('[maany-sdk] wallet: received device backup artifacts', {
           shareCount: backup.shares.length,
@@ -145,6 +153,57 @@ class DefaultMaanyWallet implements MaanyWallet {
     }
   }
 
+  async recoverKey(options: RecoverKeyOptions): Promise<RecoverKeyResult> {
+    if (!options.keyId) {
+      throw new Error('recoverKey requires keyId');
+    }
+    if (!this.options.apiBaseUrl) {
+      throw new Error('Coordinator API URL is not configured for recovery');
+    }
+    const keyIdHex = hexFromBytes(cloneBytes(options.keyId));
+    const token = await this.resolveToken(options.token);
+    const coordinatorArtifact = await fetchCoordinatorRecoveryArtifact({
+      baseUrl: this.options.apiBaseUrl,
+      walletId: keyIdHex,
+      token,
+    });
+    console.log('[maany-sdk] recovery: fetched coordinator artifact', { keyId: keyIdHex });
+    const localBackup = await loadPersistedDeviceBackup({ storage: this.options.storage, keyId: keyIdHex });
+    const shares: Uint8Array[] = [coordinatorArtifact.fragment];
+    if (localBackup && localBackup.shares.length > 0) {
+      console.log('[maany-sdk] recovery: using locally persisted fragment');
+      shares.push(localBackup.shares[0]);
+    } else {
+      if (!this.options.backupUpload?.url) {
+        throw new Error('Third-party backup host is not configured for recovery');
+      }
+      const partnerShare = await fetchThirdPartyRecoveryFragment({
+        baseUrl: this.options.backupUpload.url,
+        walletId: keyIdHex,
+        token: this.options.backupUpload.token ?? token,
+      });
+      console.log('[maany-sdk] recovery: fetched partner fragment');
+      shares.push(partnerShare);
+    }
+    if (shares.length < 2) {
+      throw new Error('Insufficient fragments to recover wallet');
+    }
+    const ctx = mpc.init();
+    try {
+      console.log('[maany-sdk] recovery: attempting backupRestore');
+      const recovered = mpcWithBackup.backupRestore(ctx, coordinatorArtifact.ciphertext, shares);
+      const deviceBlob = mpc.kpExport(ctx, recovered);
+      console.log('[maany-sdk] recovery: recovered device share', hexFromBytes(deviceBlob));
+      await this.options.storage.save({ keyId: keyIdHex, blob: cloneBytes(deviceBlob) });
+      await this.persistKeyIdentifier(keyIdHex);
+      mpc.kpFree(recovered);
+      console.log('[maany-sdk] recovery: key restored and persisted');
+      return { keyId: keyIdHex, restored: true };
+    } finally {
+      mpc.shutdown(ctx);
+    }
+  }
+
   private async checkRemoteWallet(keyId: string, token?: string): Promise<boolean | null> {
     if (!this.options.apiBaseUrl) {
       return null;
@@ -168,6 +227,14 @@ class DefaultMaanyWallet implements MaanyWallet {
       }
     }
     return this.options.token;
+  }
+
+  private async persistKeyIdentifier(keyId: string): Promise<void> {
+    try {
+      await this.options.storage.save({ keyId: this.options.metadataKey, blob: bytesFromUtf8(keyId) });
+    } catch (error) {
+      console.warn('[maany-sdk] wallet: failed to persist metadata key', error);
+    }
   }
 }
 
@@ -258,3 +325,8 @@ function resolveBackupOptions(
   }
   return resolved;
 }
+type BackupRestoreCapableMpc = typeof mpc & {
+  backupRestore(ctx: mpc.Ctx, ciphertext: BackupCiphertext, shares: Uint8Array[]): mpc.Keypair;
+};
+
+const mpcWithBackup = mpc as BackupRestoreCapableMpc;
