@@ -22,6 +22,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
+const ADDRESS_PREFIX="maany"
 const DEFAULT_SERVER_URL = Platform.OS === 'android' ? 'ws://10.0.2.2:8080' : 'ws://localhost:8080';
 const METADATA_KEY = 'maany:wallet:key-id';
 const mpcExtended = mpc as typeof mpc & {
@@ -71,6 +72,17 @@ function getPubkeyBytes(ctx: mpc.Ctx, keypair: mpc.Keypair): Uint8Array | null {
   return null;
 }
 
+function buildDummySignDoc(amount: string, denom: string, memo: string): any {
+  const sanitizedAmount = Number.parseInt(amount, 10) || 0;
+  return {
+    chainId: 'localnet-1',
+    accountNumber: '1',
+    sequence: '0',
+    bodyBytes: stringToBytes(memo),
+    authInfoBytes: stringToBytes(JSON.stringify({ amount: sanitizedAmount, denom })),
+  };
+}
+
 export default function WalletScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
@@ -80,6 +92,9 @@ export default function WalletScreen() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [keyId, setKeyId] = useState<string | null>(null);
   const [message, setMessage] = useState('Hello from Expo 👋');
+  const [signAmount, setSignAmount] = useState('1');
+  const [signDenom, setSignDenom] = useState('uatom');
+  const [signingResult, setSigningResult] = useState<string | null>(null);
   const [signature, setSignature] = useState<SignResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -188,6 +203,7 @@ export default function WalletScreen() {
       setSessionId(null);
       setKeyId(null);
       setSignature(null);
+      setSigningResult(null);
       setStatus('idle');
       setRemoteWalletStatus('unknown');
     } catch (disconnectError) {
@@ -221,8 +237,24 @@ export default function WalletScreen() {
   }, [createWalletInstance, refreshKeyId, token]);
 
   const handleSign = useCallback(async () => {
-    setError('Signing not implemented in createMaanyWallet demo.');
-  }, []);
+    setSigning(true);
+    setError(null);
+    setSigningResult(null);
+    try {
+      const wallet = walletRef.current ?? createWalletInstance();
+      walletRef.current = wallet;
+      const doc = buildDummySignDoc(signAmount, signDenom, message);
+      const result = await wallet.signCosmos({
+        doc,
+        token: token.trim() || undefined,
+      });
+      setSigningResult(bytesToHex(result.signature));
+    } catch (signError) {
+      setError(signError instanceof Error ? signError.message : String(signError));
+    } finally {
+      setSigning(false);
+    }
+  }, [createWalletInstance, signAmount, signDenom, message, token]);
 
   const handleShowKeyData = useCallback(async () => {
     setPubkeyError(null);
@@ -266,7 +298,7 @@ export default function WalletScreen() {
           const pubHex = bytesToHex(pub);
           setPublicKeyHex(pubHex);
           try {
-            const address = pubkeyToCosmosAddress(pub);
+            const address = pubkeyToCosmosAddress(pub, ADDRESS_PREFIX);
             setAddress(address);
             console.log('[maany-sdk-demo] show key: derived address', address);
           } catch (addrError) {
@@ -388,19 +420,33 @@ export default function WalletScreen() {
         </ThemedView>
 
         <ThemedView style={styles.card}>
-          <ThemedText type="subtitle">Sign a message</ThemedText>
+          <ThemedText type="subtitle">Sign a Cosmos transfer</ThemedText>
+          <TextInput
+            style={[styles.input, { borderColor: Colors[colorScheme].tint, color: Colors[colorScheme].text }]}
+            keyboardType="numeric"
+            value={signAmount}
+            onChangeText={setSignAmount}
+            placeholder="Amount"
+          />
+          <TextInput
+            style={[styles.input, { borderColor: Colors[colorScheme].tint, color: Colors[colorScheme].text }]}
+            value={signDenom}
+            onChangeText={setSignDenom}
+            placeholder="Denom"
+          />
           <TextInput
             style={[styles.input, styles.textArea, { borderColor: Colors[colorScheme].tint, color: Colors[colorScheme].text }]}
             multiline
             value={message}
             onChangeText={setMessage}
+            placeholder="Memo"
           />
-          <ActionButton label={signing ? 'Signing…' : 'Sign now'} onPress={handleSign} disabled={signing} />
-          {signature && (
+          <ActionButton label={signing ? 'Signing…' : 'Sign transfer'} onPress={handleSign} disabled={signing} />
+          {signingResult && (
             <View style={styles.signatureBox}>
-              <ThemedText type="defaultSemiBold">Signature ({signature.format})</ThemedText>
+              <ThemedText type="defaultSemiBold">Signature (DER)</ThemedText>
               <ThemedText selectable style={styles.mono}>
-                {bytesToHex(signature.signature)}
+                {signingResult}
               </ThemedText>
             </View>
           )}

@@ -133,6 +133,26 @@ export interface CreateKeyResult {
 export interface MaanyWallet {
   createKey(options?: CreateKeyOptions): Promise<CreateKeyResult>;
   recoverKey(options: RecoverKeyOptions): Promise<RecoverKeyResult>;
+  signBytes(options: WalletSignOptions): Promise<SignResult>;
+  signCosmos(options: WalletSignCosmosOptions): Promise<SignCosmosDocResult>;
+}
+
+export interface WalletSignOptions {
+  keyId?: Uint8Array;
+  bytes: Uint8Array;
+  extraAad?: Uint8Array;
+  format?: mpc.SignatureFormat;
+  token?: string;
+}
+
+export interface WalletSignCosmosOptions {
+  keyId?: Uint8Array;
+  doc: SignDoc;
+  prefix?: string;
+  extraAad?: Uint8Array;
+  format?: mpc.SignatureFormat;
+  token?: string;
+  prehash?: boolean;
 }
 
 export interface RecoverKeyOptions {

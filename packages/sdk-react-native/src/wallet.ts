@@ -16,8 +16,12 @@ import {
   WalletStorageOption,
   RecoverKeyOptions,
   RecoverKeyResult,
+  WalletSignOptions,
+  WalletSignCosmosOptions,
+  SignCosmosDocResult,
+  SignResult,
 } from './types';
-import { bytesFromHex, bytesFromUtf8, cloneBytes, hexFromBytes } from './bytes';
+import { bytesFromHex, bytesFromUtf8, utf8FromBytes, cloneBytes, hexFromBytes } from './bytes';
 import { randomBytes } from './random';
 import { readEnv } from './env';
 import { withModeSupport } from './coordinator';
@@ -26,6 +30,7 @@ import { persistDeviceBackupLocally, loadPersistedDeviceBackup } from './backup-
 import { uploadThirdPartyBackupFragment } from './backup-upload';
 import { fetchCoordinatorRecoveryArtifact, fetchThirdPartyRecoveryFragment } from './recovery';
 import { resolveApiBaseUrl, walletExistsRemotely } from './api';
+import { makeSignBytes, sha256 } from '@maanyio/mpc-coordinator-rn';
 
 const DEFAULT_AUTH_TOKEN = 'dev-token';
 const DEFAULT_BACKUP_SHARE_COUNT = 3;
@@ -204,6 +209,62 @@ class DefaultMaanyWallet implements MaanyWallet {
     }
   }
 
+  async signBytes(options: WalletSignOptions): Promise<SignResult> {
+    const keyIdHex = options.keyId ? hexFromBytes(cloneBytes(options.keyId)) : await this.ensureKeyId();
+    if (!keyIdHex) {
+      throw new Error('signBytes requires an existing wallet. Run createKey() first.');
+    }
+    const token = await this.resolveToken(options.token);
+    const blob = await this.loadDeviceShare(keyIdHex);
+    const connection = await connectToCoordinator({
+      url: this.options.serverUrl,
+      token,
+      intent: 'sign',
+      keyId: keyIdHex,
+    });
+    const coordinator = withModeSupport(
+      createCoordinator({ transport: connection.transport, storage: this.options.storage })
+    );
+    const ctx = coordinator.initContext();
+    try {
+      const keypair = mpc.kpImport(ctx, blob);
+      const signature = await coordinator.runSign(ctx, keypair, null, {
+        message: cloneBytes(options.bytes),
+        extraAad: options.extraAad ? cloneBytes(options.extraAad) : undefined,
+        format: options.format,
+        mode: 'device-only',
+      });
+      mpc.kpFree(keypair);
+      if (!signature) {
+        throw new Error('Coordinator did not produce a signature');
+      }
+      return {
+        signature,
+        format: options.format ?? 'der',
+      };
+    } finally {
+      connection.close();
+      mpc.shutdown(ctx);
+    }
+  }
+
+  async signCosmos(options: WalletSignCosmosOptions): Promise<SignCosmosDocResult> {
+    const body = makeSignBytes(options.doc);
+    const digest = options.prehash === false ? body : sha256(body);
+    const result = await this.signBytes({
+      keyId: options.keyId,
+      bytes: digest,
+      extraAad: options.extraAad,
+      format: options.format,
+      token: options.token,
+    });
+    return {
+      ...result,
+      digest,
+      bodyBytes: body,
+    };
+  }
+
   private async checkRemoteWallet(keyId: string, token?: string): Promise<boolean | null> {
     if (!this.options.apiBaseUrl) {
       return null;
@@ -235,6 +296,22 @@ class DefaultMaanyWallet implements MaanyWallet {
     } catch (error) {
       console.warn('[maany-sdk] wallet: failed to persist metadata key', error);
     }
+  }
+
+  private async ensureKeyId(): Promise<string | null> {
+    const record = await this.options.storage.load(this.options.metadataKey);
+    if (!record) {
+      return null;
+    }
+    return utf8FromBytes(record.blob);
+  }
+
+  private async loadDeviceShare(keyId: string): Promise<Uint8Array> {
+    const record = await this.options.storage.load(keyId);
+    if (!record) {
+      throw new Error('Device key share not found. Run recoverKey or createKey first.');
+    }
+    return cloneBytes(record.blob);
   }
 }
 
