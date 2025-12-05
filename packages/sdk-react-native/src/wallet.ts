@@ -30,7 +30,7 @@ import { persistDeviceBackupLocally, loadPersistedDeviceBackup } from './backup-
 import { uploadThirdPartyBackupFragment } from './backup-upload';
 import { fetchCoordinatorRecoveryArtifact, fetchThirdPartyRecoveryFragment } from './recovery';
 import { resolveApiBaseUrl, walletExistsRemotely } from './api';
-import { makeSignBytes, sha256 } from '@maanyio/mpc-coordinator-rn';
+import { buildSignDoc, hashSignDoc } from '@maany/cosmos-sign-doc';
 
 const DEFAULT_AUTH_TOKEN = 'dev-token';
 const DEFAULT_BACKUP_SHARE_COUNT = 3;
@@ -249,8 +249,13 @@ class DefaultMaanyWallet implements MaanyWallet {
   }
 
   async signCosmos(options: WalletSignCosmosOptions): Promise<SignCosmosDocResult> {
-    const body = makeSignBytes(options.doc);
-    const digest = options.prehash === false ? body : sha256(body);
+    const signDocBytes = buildSignDoc({
+      bodyBytes: options.doc.bodyBytes,
+      authInfoBytes: options.doc.authInfoBytes,
+      chainId: options.doc.chainId,
+      accountNumber: options.doc.accountNumber,
+    });
+    const digest = options.prehash === false ? signDocBytes : hashSignDoc(signDocBytes);
     const result = await this.signBytes({
       keyId: options.keyId,
       bytes: digest,
@@ -261,7 +266,7 @@ class DefaultMaanyWallet implements MaanyWallet {
     return {
       ...result,
       digest,
-      bodyBytes: body,
+      bodyBytes: options.doc.bodyBytes,
     };
   }
 
