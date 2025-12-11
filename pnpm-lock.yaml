@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      cosmjs-types:
+        specifier: ^0.9.0
+        version: 0.9.0
     devDependencies:
       '@changesets/cli':
         specifier: ^2.27.8
@@ -104,6 +108,9 @@ importers:
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
+      cosmjs-types:
+        specifier: ^0.9.0
+        version: 0.9.0
     devDependencies:
       '@types/node':
         specifier: ^18.19.48
@@ -1109,6 +1116,9 @@ packages:
 
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
+
+  cosmjs-types@0.9.0:
+    resolution: {integrity: sha512-MN/yUe6mkJwHnCFfsNPeCfXVhyxHYW6c/xDUzrSbBycYzw++XvWDMJArXp2pLdgD6FQ8DW79vkPjeNKVrXaHeQ==}
 
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
@@ -3436,6 +3446,8 @@ snapshots:
       - supports-color
 
   convert-source-map@2.0.0: {}
+
+  cosmjs-types@0.9.0: {}
 
   cross-spawn@7.0.6:
     dependencies:

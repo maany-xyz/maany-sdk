@@ -24,7 +24,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 
 const ADDRESS_PREFIX = 'maany';
 const DEFAULT_CHAIN_ID = 'maany-local-1';
-const DEFAULT_GAS_PRICE = { amount: '62000', denom: 'umaany' } as const;
+const DEFAULT_GAS_PRICE = { amount: '0.3', denom: 'umaany' } as const;
 const DEFAULT_RECIPIENT = 'maany1yvkk37ay7rtv8w3cy9w9elku7ty3yve66x24yx';
 const DEFAULT_SERVER_URL = Platform.OS === 'android' ? 'ws://10.0.2.2:8080' : 'ws://localhost:8080';
 const METADATA_KEY = 'maany:wallet:key-id';

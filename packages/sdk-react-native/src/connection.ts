@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import { WebSocketTransport } from '@maanyio/mpc-coordinator-rn';
-import { hexFromBytes } from './bytes';
+import { hexFromBytes, bytesToBase64 } from './bytes';
 import { randomBytes } from './random';
 import { readEnv } from './env';
 
@@ -21,6 +21,8 @@ export interface ConnectToCoordinatorOptions {
   keyId?: string;
   sessionId?: string;
   sessionIdHint?: string;
+  message?: Uint8Array;
+  messageEncoding?: 'base64' | 'hex';
 }
 
 interface RawSendCapableTransport extends WebSocketTransport {
@@ -41,6 +43,8 @@ interface HelloPayload {
   intent?: SessionIntent;
   keyId?: string;
   sessionIdHint?: string;
+  message?: string;
+  messageEncoding?: 'base64' | 'hex';
 }
 
 type Listener = (...args: any[]) => void;
@@ -70,6 +74,13 @@ export async function connectToCoordinator(
     keyId: options.keyId,
     sessionIdHint: options.sessionIdHint,
   };
+  if (options.message) {
+    const encoding = options.messageEncoding ?? 'base64';
+    hello.message = encoding === 'hex' ? hexFromBytes(options.message) : bytesToBase64(options.message);
+    if (encoding !== 'base64') {
+      hello.messageEncoding = encoding;
+    }
+  }
   console.log('[maany-sdk] connection: sending hello', hello);
   console.log('this is being updated')
   socket.send(JSON.stringify(hello));

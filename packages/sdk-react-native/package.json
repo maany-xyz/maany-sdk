@@ -19,7 +19,8 @@
     "@maany/cosmos-tx": "workspace:*",
     "@maanyio/mpc-coordinator-rn": "^0.1.4",
     "@maanyio/mpc-rn-bare": "^0.1.5",
-    "@noble/hashes": "^1.8.0"
+    "@noble/hashes": "^1.8.0",
+    "cosmjs-types": "^0.9.0"
   },
   "devDependencies": {
     "@types/node": "^18.19.48",

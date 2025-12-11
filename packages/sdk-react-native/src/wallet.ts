@@ -73,6 +73,7 @@ interface NormalizedWalletOptions {
   gasPrice: GasPriceConfig;
   gasAdjustment: number;
   broadcastMode: BroadcastMode;
+  defaultGasLimit?: number;
 }
 
 interface BackupUploadConfig {
@@ -101,6 +102,7 @@ export function createMaanyWallet(options: WalletOptions = {}): MaanyWallet {
     gasPrice,
     gasAdjustment: options.gasAdjustment ?? DEFAULT_GAS_ADJUSTMENT,
     broadcastMode: options.broadcastMode ?? DEFAULT_BROADCAST_MODE,
+    defaultGasLimit: options.defaultGasLimit,
   };
   return new DefaultMaanyWallet(normalized);
 }
@@ -146,6 +148,7 @@ class DefaultMaanyWallet implements MaanyWallet {
       });
       const deviceBlob = mpc.kpExport(ctx, deviceKeypair);
       const keyId = providedKeyIdHex ?? hexFromBytes(deviceBlob);
+      console.log('[maany-sdk] wallet: saving device share', { keyId });
       await this.options.storage.save({ keyId, blob: cloneBytes(deviceBlob) });
       await this.persistKeyIdentifier(keyId);
       if (backup) {
@@ -232,6 +235,7 @@ class DefaultMaanyWallet implements MaanyWallet {
       const recovered = mpcWithBackup.backupRestore(ctx, coordinatorArtifact.ciphertext, shares);
       const deviceBlob = mpc.kpExport(ctx, recovered);
       console.log('[maany-sdk] recovery: recovered device share', hexFromBytes(deviceBlob));
+      console.log('[maany-sdk] recovery: saving device share to storage');
       await this.options.storage.save({ keyId: keyIdHex, blob: cloneBytes(deviceBlob) });
       await this.persistKeyIdentifier(keyIdHex);
       mpc.kpFree(recovered);
@@ -248,25 +252,39 @@ class DefaultMaanyWallet implements MaanyWallet {
       throw new Error('signBytes requires an existing wallet. Run createKey() first.');
     }
     const token = await this.resolveToken(options.token);
+    const messageBytes = cloneBytes(options.bytes);
+    console.log('[maany-sdk] wallet: loading device share for', keyIdHex);
     const blob = await this.loadDeviceShare(keyIdHex);
+    console.log('[maany-sdk] wallet: loaded device share bytes', blob.length);
     const connection = await connectToCoordinator({
       url: this.options.serverUrl,
       token,
       intent: 'sign',
       keyId: keyIdHex,
+      message: cloneBytes(messageBytes),
     });
     const coordinator = withModeSupport(
       createCoordinator({ transport: connection.transport, storage: this.options.storage })
     );
     const ctx = coordinator.initContext();
     try {
+      console.log('[maany-sdk] wallet: importing keypair');
       const keypair = mpc.kpImport(ctx, blob);
-      const signature = await coordinator.runSign(ctx, keypair, null, {
-        message: cloneBytes(options.bytes),
-        extraAad: options.extraAad ? cloneBytes(options.extraAad) : undefined,
-        format: options.format,
-        mode: 'device-only',
-      });
+      console.log('[maany-sdk] wallet: keypair imported');
+      let signature: Uint8Array | null = null;
+      try {
+        console.log('[maany-sdk] wallet: invoking coordinator.runSign');
+        signature = await coordinator.runSign(ctx, keypair, null, {
+          message: messageBytes,
+          extraAad: options.extraAad ? cloneBytes(options.extraAad) : undefined,
+          format: options.format,
+          mode: 'device-only',
+        });
+        console.log('[maany-sdk] wallet: coordinator.runSign completed');
+      } catch (error) {
+        console.error('[maany-sdk] wallet: coordinator.runSign failed', error);
+        throw error;
+      }
       mpc.kpFree(keypair);
       if (!signature) {
         throw new Error('Coordinator did not produce a signature');
@@ -357,24 +375,36 @@ class DefaultMaanyWallet implements MaanyWallet {
     const gasPrice = normalizeGasPriceConfig(options.gasPrice, this.options.gasPrice);
     const gasAdjustment = options.gasAdjustment ?? this.options.gasAdjustment;
     const signerPublicKey = buildSecp256k1PubkeyAny(keyMaterial.compressed);
-    const simulateAuthInfo = buildAuthInfo({
-      sequence: account.sequence,
-      publicKey: signerPublicKey,
-      gasLimit: '0',
-      feeAmount: [{ denom: gasPrice.denom, amount: '0' }],
-    });
-    const simulateTxBytes = buildTxRaw({
-      bodyBytes,
-      authInfoBytes: simulateAuthInfo,
-      signatures: [new Uint8Array(64)],
-    });
-    console.log('[maany-sdk] wallet: simulating transaction');
-    const gasEstimate = await simulateTx(transport, simulateTxBytes);
-    console.log('[maany-sdk] wallet: gas estimate', gasEstimate);
-    const gasLimit = calculateGasLimit(
-      gasEstimate.recommended || gasEstimate.gasWanted || gasEstimate.gasUsed,
-      gasAdjustment,
-    );
+    let gasLimit: bigint;
+    let gasUsedValue = 0;
+    let gasWantedValue = 0;
+    if (options.gasLimit ?? this.options.defaultGasLimit) {
+      const provided = options.gasLimit ?? this.options.defaultGasLimit ?? 200_000;
+      console.log('[maany-sdk] wallet: using manual gas limit', provided);
+      gasLimit = calculateGasLimit(provided, gasAdjustment);
+      gasUsedValue = provided;
+      gasWantedValue = provided;
+    } else {
+      const simulateAuthInfo = buildAuthInfo({
+        sequence: account.sequence,
+        publicKey: signerPublicKey,
+        gasLimit: '0',
+        feeAmount: [{ denom: gasPrice.denom, amount: '0' }],
+      });
+      const simulateTxBytes = buildTxRaw({
+        bodyBytes,
+        authInfoBytes: simulateAuthInfo,
+        signatures: [new Uint8Array(64)],
+      });
+      console.log('[maany-sdk] wallet: simulating transaction');
+      const gasEstimate = await simulateTx(transport, simulateTxBytes);
+      console.log('[maany-sdk] wallet: gas estimate', gasEstimate);
+      const rawGas = gasEstimate.recommended || gasEstimate.gasWanted || gasEstimate.gasUsed;
+      console.log('[maany-sdk] wallet: raw gas before clamp', { rawGas, gasAdjustment });
+      gasLimit = calculateGasLimit(Math.min(rawGas, 500_000), gasAdjustment);
+      gasUsedValue = gasEstimate.gasUsed;
+      gasWantedValue = gasEstimate.gasWanted;
+    }
     const gasLimitString = gasLimit.toString();
     const feeAmountValue = multiplyGasPrice(gasPrice.amount, gasLimit);
     const feeCoin: Coin = { denom: gasPrice.denom, amount: feeAmountValue };
@@ -391,6 +421,13 @@ class DefaultMaanyWallet implements MaanyWallet {
       accountNumber: account.accountNumber,
       sequence: account.sequence,
     };
+    console.log('[maany-sdk] sign: sign-doc components', {
+      chainId,
+      accountNumber: account.accountNumber,
+      sequence: account.sequence,
+      bodyHex: hexFromBytes(bodyBytes),
+      authHex: hexFromBytes(authInfoBytes),
+    });
     console.log('[maany-sdk] wallet: signing sign doc');
     const signatureResult = await this.signCosmos({
       doc,
@@ -417,8 +454,8 @@ class DefaultMaanyWallet implements MaanyWallet {
       rawLog: broadcastResult.rawLog,
       code: broadcastResult.code,
       txRawBytes,
-      gasUsed: gasEstimate.gasUsed,
-      gasWanted: gasEstimate.gasWanted,
+      gasUsed: gasUsedValue,
+      gasWanted: gasWantedValue,
       gasLimit: gasLimitString,
       fee: feeCoin,
     };
@@ -503,7 +540,13 @@ class DefaultMaanyWallet implements MaanyWallet {
     if (!record) {
       throw new Error('Device key share not found. Run recoverKey or createKey first.');
     }
-    return cloneBytes(record.blob);
+    const cloned = cloneBytes(record.blob);
+    console.log('[maany-sdk] wallet: loaded device share from storage', {
+      keyId,
+      bytes: cloned.length,
+      hex: hexFromBytes(cloned),
+    });
+    return cloned;
   }
 }
 

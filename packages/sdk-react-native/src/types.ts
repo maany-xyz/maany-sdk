@@ -127,6 +127,7 @@ export interface WalletOptions {
   defaultGasPrice?: GasPriceConfig;
   gasAdjustment?: number;
   broadcastMode?: BroadcastMode;
+  defaultGasLimit?: number;
 }
 
 export interface CreateKeyOptions {
@@ -183,6 +184,7 @@ export interface WalletMsgSendOptions {
   extraAad?: Uint8Array;
   format?: mpc.SignatureFormat;
   token?: string;
+  gasLimit?: number;
 }
 
 export interface WalletMsgSendResult extends SignCosmosDocResult {

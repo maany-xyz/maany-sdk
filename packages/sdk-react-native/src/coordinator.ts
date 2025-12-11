@@ -7,6 +7,8 @@ import type {
 } from '@maanyio/mpc-coordinator-rn';
 import { runDkg as runDkgImpl } from '@maanyio/mpc-coordinator-rn/dist/session/dkg';
 import { cloneBytes, optionalClone, toHex } from '@maanyio/mpc-coordinator-rn/dist/utils/bytes';
+import { hexFromBytes } from './bytes';
+import { derToCompactSignature } from './crypto/signature';
 
 export interface CoordinatorRunDkgOptions {
   keyId?: Uint8Array;
@@ -164,38 +166,52 @@ async function runDeviceOnlySign(
   }
 
   const signDevice = mpc.signNew(ctx, device, commonOpts);
-  mpc.signSetMessage(ctx, signDevice, cloneBytes(opts.message));
+  const message = cloneBytes(opts.message);
+  console.log('[maany-sdk] sign: setting message bytes', { length: message.length, hex: hexFromBytes(message) });
+  mpc.signSetMessage(ctx, signDevice, message);
 
   const waitForServerMessage = async (): Promise<Uint8Array> => {
+    let attempts = 0;
     while (true) {
       const next = await opts.transport.receive('device');
       if (next) {
         return next;
       }
+      attempts += 1;
+      if (attempts % 200 === 0) {
+        console.log('[maany-sdk] sign: still waiting for server payload', { attempts });
+      }
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
   };
 
-  let inbound: Uint8Array | undefined;
+  console.log('[maany-sdk] sign: starting device-only loop');
+  let inbound: Uint8Array | undefined = await waitForServerMessage();
+  console.log('[maany-sdk] sign: received initial server payload', { bytes: inbound.length });
   for (let i = 0; i < 512; ++i) {
     const res = await mpc.signStep(ctx, signDevice, inbound);
     inbound = undefined;
     if (res.outMsg) {
+      console.log('[maany-sdk] sign: sending payload to server', { round: i, bytes: res.outMsg.length });
       await opts.transport.send({ participant: 'server', payload: res.outMsg });
     }
     if (res.done) {
+      console.log('[maany-sdk] sign: signStep done at round', i);
       break;
     }
+    console.log('[maany-sdk] sign: waiting for server payload', { round: i });
     inbound = await waitForServerMessage();
+    console.log('[maany-sdk] sign: received server payload', { round: i, bytes: inbound.length });
   }
 
   const format = opts.format ?? 'der';
-  const signature = mpc.signFinalize(ctx, signDevice, format);
+  const signatureDer = mpc.signFinalize(ctx, signDevice, format);
   mpc.signFree(signDevice);
 
   await drainTransportQueue(opts.transport, 'device');
+  console.log('[maany-sdk] sign: device-only loop complete');
 
-  return signature;
+  return format === 'der' ? derToCompactSignature(signatureDer) : signatureDer;
 }
 
 async function drainTransportQueue(

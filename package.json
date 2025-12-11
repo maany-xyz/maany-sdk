@@ -10,10 +10,13 @@
     "release": "changeset version && pnpm i -w && turbo build && changeset publish"
   },
   "devDependencies": {
-    "turbo": "^2.1.3",
     "@changesets/cli": "^2.27.8",
-    "typescript": "^5.5.4",
     "eslint": "^9.9.0",
-    "prettier": "^3.3.3"
+    "prettier": "^3.3.3",
+    "turbo": "^2.1.3",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "cosmjs-types": "^0.9.0"
   }
 }

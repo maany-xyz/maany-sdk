@@ -3,10 +3,10 @@ import {
   Coordinator,
   InMemoryShareStorage,
   createCoordinator,
-  makeSignBytes,
   pubkeyToCosmosAddress,
   sha256,
 } from '@maanyio/mpc-coordinator-rn';
+import { SignDoc as ProtoSignDoc } from 'cosmjs-types/cosmos/tx/v1beta1/tx';
 import type { ShareStorage } from '@maanyio/mpc-coordinator-rn';
 import { bytesFromUtf8, hexFromBytes, utf8FromBytes, cloneBytes } from './bytes';
 import { randomBytes } from './random';
@@ -196,13 +196,18 @@ class ReactNativeWalletAdapterImpl implements ReactNativeWalletAdapter {
   }
 
   async signCosmosDoc(options: SignCosmosDocOptions): Promise<SignCosmosDocResult> {
-    const body = makeSignBytes(options.doc);
-    const digest = options.prehash === false ? body : sha256(body);
+    const signDocBytes = ProtoSignDoc.encode({
+      bodyBytes: options.doc.bodyBytes,
+      authInfoBytes: options.doc.authInfoBytes,
+      chainId: options.doc.chainId,
+      accountNumber: BigInt(options.doc.accountNumber),
+    }).finish();
+    const digest = options.prehash === false ? signDocBytes : sha256(signDocBytes);
     const res = await this.sign({ bytes: digest, extraAad: options.extraAad, format: options.format });
     return {
       ...res,
       digest,
-      bodyBytes: body,
+      bodyBytes: signDocBytes,
     };
   }
 

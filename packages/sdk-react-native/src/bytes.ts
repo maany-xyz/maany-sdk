@@ -4,6 +4,16 @@ export const hexFromBytes = (bytes: Uint8Array): string => bytesToHex(bytes);
 export const bytesFromUtf8 = (value: string): Uint8Array => utf8ToBytes(value);
 export const utf8FromBytes = (bytes: Uint8Array): string => bytesToUtf8(bytes);
 export const cloneBytes = (source: Uint8Array): Uint8Array => new Uint8Array(source);
+export const concatBytes = (...parts: Uint8Array[]): Uint8Array => {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+};
 
 export const bytesFromHex = (hex: string): Uint8Array => {
   const normalized = hex.trim().toLowerCase().replace(/^0x/, '');
